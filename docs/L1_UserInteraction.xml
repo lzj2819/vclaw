@@ -1,0 +1,247 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  L1: 用户接入层 (User Interaction)
+  创建时间: 2024
+  用途: 详细定义第一层的架构、接口、耦合和测试规范
+-->
+<Layer id="L1" name="UserInteraction" version="1.0">
+  
+  <!-- ==================== 1. 结构说明 ==================== -->
+  <Structure>
+    <Purpose>系统的门面，负责所有形式的输入与输出处理</Purpose>
+    
+    <Responsibilities>
+      <Item priority="critical">接收并解析异构外部协议（WebSocket, Telegram API, HTTP Webhook）</Item>
+      <Item priority="critical">剥离渠道特征，将原始数据标准化为统一事件格式</Item>
+      <Item priority="high">数据验证和清洗（JSON Schema校验、注入防护）</Item>
+      <Item priority="high">错误处理和重试机制（连接失败时的指数退避）</Item>
+      <Item priority="medium">日志记录和监控埋点</Item>
+    </Responsibilities>
+    
+    <Components>
+      <Component name="ProtocolAdapter">
+        <Description>协议适配器基类，定义统一适配接口</Description>
+        <Implementations>
+          <Impl>WebSocketAdapter - 处理WebSocket连接</Impl>
+          <Impl>TelegramAdapter - 处理Telegram Bot API</Impl>
+          <Impl>HttpWebhookAdapter - 处理HTTP Webhook回调</Impl>
+        </Implementations>
+      </Component>
+      
+      <Component name="DataValidator">
+        <Description>数据验证器，确保输入数据符合预期格式</Description>
+        <Rules>
+          <Rule>channel必须是预定义的有效值</Rule>
+          <Rule>user_id不能为空且长度限制在256字符内</Rule>
+          <Rule>content不能为空</Rule>
+          <Rule>timestamp必须是有效的Unix时间戳</Rule>
+        </Rules>
+      </Component>
+      
+      <Component name="EventNormalizer">
+        <Description>事件标准化器，将各种格式的原始数据转为StandardEvent</Description>
+      </Component>
+      
+      <Component name="ErrorHandler">
+        <Description>错误处理器，管理异常和重试逻辑</Description>
+        <RetryPolicy>
+          <MaxRetries>3</MaxRetries>
+          <BackoffStrategy>exponential</BackoffStrategy>
+          <InitialDelay>1000ms</InitialDelay>
+        </RetryPolicy>
+      </Component>
+    </Components>
+    
+    <DataFlow>
+      <Step order="1">接收原始数据（raw_data: dict）</Step>
+      <Step order="2">根据channel类型选择对应的ProtocolAdapter</Step>
+      <Step order="3">使用DataValidator验证数据完整性</Step>
+      <Step order="4">EventNormalizer将数据转换为StandardEvent</Step>
+      <Step order="5">返回StandardEvent给上层（L2）</Step>
+      <Step order="6">如遇错误，ErrorHandler记录并重试</Step>
+    </DataFlow>
+  </Structure>
+  
+  <!-- ==================== 2. 接口规范 ==================== -->
+  <Interface>
+    <PrimaryMethod name="receive_payload">
+      <Signature>
+        <Input>
+          <Parameter name="raw_data" type="dict" required="true">
+            <Description>原始输入数据，格式取决于渠道类型</Description>
+            <Example>
+              <![CDATA[
+              {
+                "update_id": 123456789,
+                "message": {
+                  "message_id": 1,
+                  "from": {"id": 12345, "first_name": "User"},
+                  "chat": {"id": 12345, "type": "private"},
+                  "date": 1234567890,
+                  "text": "Hello bot"
+                }
+              }
+              ]]>
+            </Example>
+          </Parameter>
+        </Input>
+        
+        <Output type="StandardEvent">
+          <Field name="channel" type="str" required="true">
+            <Description>渠道来源标识</Description>
+            <ValidValues>telegram, websocket, webhook</ValidValues>
+          </Field>
+          <Field name="user_id" type="str" required="true">
+            <Description>用户唯一标识符</Description>
+            <Constraints>非空，最大长度256字符</Constraints>
+          </Field>
+          <Field name="content" type="str" required="true">
+            <Description>用户输入的文本内容</Description>
+            <Constraints>非空</Constraints>
+          </Field>
+          <Field name="timestamp" type="float" required="true">
+            <Description>消息时间戳（Unix时间戳，秒级精度）</Description>
+          </Field>
+          <Field name="metadata" type="dict" required="false">
+            <Description>渠道特定的附加元数据</Description>
+          </Field>
+        </Output>
+        
+        <Exceptions>
+          <Exception name="ValidationError">
+            <Description>输入数据验证失败</Description>
+            <ErrorCode>400</ErrorCode>
+          </Exception>
+          <Exception name="UnsupportedChannelError">
+            <Description>不支持的渠道类型</Description>
+            <ErrorCode>400</ErrorCode>
+          </Exception>
+          <Exception name="ParseError">
+            <Description>数据解析失败</Description>
+            <ErrorCode>500</ErrorCode>
+          </Exception>
+        </Exceptions>
+      </Signature>
+    </PrimaryMethod>
+  </Interface>
+  
+  <!-- ==================== 3. 耦合关系 ==================== -->
+  <Coupling>
+    <Upstream>
+      <Layer id="External">外部系统（Telegram API, WebSocket客户端, HTTP请求）</Layer>
+      <Relation>接收输入</Relation>
+      <Protocol>HTTPS / WebSocket / HTTP</Protocol>
+    </Upstream>
+    
+    <Downstream>
+      <Layer id="L2">控制网关层 (Control Gateway)</Layer>
+      <Relation>调用</Relation>
+      <Method>直接方法调用: L2.process_event(event: StandardEvent)</Method>
+      <DataFormat>StandardEvent对象</DataFormat>
+    </Downstream>
+    
+    <Dependencies>
+      <Internal>
+        <Dependency>models.StandardEvent - 标准化事件数据结构</Dependency>
+        <Dependency>ProtocolAdapter抽象基类</Dependency>
+      </Internal>
+      <External>
+        <Dependency>websockets - WebSocket客户端库</Dependency>
+        <Dependency>python-telegram-bot - Telegram Bot API客户端</Dependency>
+        <Dependency>fastapi - HTTP Webhook服务器</Dependency>
+      </External>
+    </Dependencies>
+    
+    <CouplingStrength>低耦合</CouplingStrength>
+    <CouplingType>数据耦合（仅通过StandardEvent数据结构通信）</CouplingType>
+  </Coupling>
+  
+  <!-- ==================== 4. Mock测试规范 ==================== -->
+  <Testing>
+    <Strategy>Mock所有外部依赖，验证本层逻辑</Strategy>
+    
+    <TestCases>
+      <TestCase id="TC-L1-001" priority="critical">
+        <Name>Telegram消息标准化</Name>
+        <Objective>验证Telegram格式的原始数据能正确转换为StandardEvent</Objective>
+        <MockObjects>
+          <Mock>TelegramAdapter - 模拟Telegram API响应</Mock>
+        </MockObjects>
+        <Steps>
+          <Step>构造Telegram格式的raw_data</Step>
+          <Step>调用receive_payload(raw_data)</Step>
+          <Step>验证输出StandardEvent的各字段</Step>
+        </Steps>
+        <Expected>
+          <Check>channel == "telegram"</Check>
+          <Check>user_id == raw_data["message"]["from"]["id"]</Check>
+          <Check>content == raw_data["message"]["text"]</Check>
+        </Expected>
+      </TestCase>
+      
+      <TestCase id="TC-L1-002" priority="critical">
+        <Name>数据验证失败处理</Name>
+        <Objective>验证无效数据会抛出ValidationError</Objective>
+        <MockObjects>
+          <Mock>DataValidator - 返回验证失败</Mock>
+        </MockObjects>
+        <Steps>
+          <Step>构造缺少必需字段的raw_data</Step>
+          <Step>调用receive_payload(raw_data)</Step>
+        </Steps>
+        <Expected>
+          <Check>抛出ValidationError</Check>
+          <Check>错误信息包含缺失的字段名</Check>
+        </Expected>
+      </TestCase>
+      
+      <TestCase id="TC-L1-003" priority="high">
+        <Name>WebSocket消息处理</Name>
+        <Objective>验证WebSocket格式的消息能正确解析</Objective>
+        <MockObjects>
+          <Mock>WebSocketAdapter - 模拟WebSocket消息</Mock>
+        </MockObjects>
+        <Steps>
+          <Step>构造WebSocket格式的raw_data</Step>
+          <Step>调用receive_payload(raw_data)</Step>
+        </Steps>
+        <Expected>
+          <Check>channel == "websocket"</Check>
+          <Check>输出符合StandardEvent规范</Check>
+        </Expected>
+      </TestCase>
+      
+      <TestCase id="TC-L1-004" priority="medium">
+        <Name>重试机制验证</Name>
+        <Objective>验证连接失败时会按策略重试</Objective>
+        <MockObjects>
+          <Mock>ErrorHandler - 模拟重试逻辑</Mock>
+        </MockObjects>
+        <Steps>
+          <Step>模拟连续3次连接失败</Step>
+          <Step>调用receive_payload</Step>
+        </Steps>
+        <Expected>
+          <Check>总共尝试4次（初始+3次重试）</Check>
+          <Check>每次重试间隔符合指数退避策略</Check>
+        </Expected>
+      </TestCase>
+    </TestCases>
+    
+    <TDDApproach>
+      <Phase name="Red">
+        <Action>编写测试用例，模拟L1的期望行为</Action>
+        <Verify>运行测试，确认失败（功能未实现）</Verify>
+      </Phase>
+      <Phase name="Green">
+        <Action>实现最简单的L1代码，使测试通过</Action>
+        <Verify>所有测试变为绿色（通过）</Verify>
+      </Phase>
+      <Phase name="Refactor">
+        <Action>优化代码结构，保持测试通过</Action>
+        <Verify>代码质量提升，测试仍通过</Verify>
+      </Phase>
+    </TDDApproach>
+  </Testing>
+  
+</Layer>
