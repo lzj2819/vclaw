@@ -1,0 +1,446 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  L4: 记忆与知识层 (Memory &amp; Knowledge)
+  创建时间: 2024
+  用途: 详细定义第四层的架构、接口、耦合和测试规范
+-->
+<Layer id="L4" name="MemoryKnowledge" version="1.0">
+  
+  <!-- ==================== 1. 结构说明 ==================== -->
+  <Structure>
+    <Purpose>系统的经验库，负责RAG、向量索引与长期记忆持久化</Purpose>
+    
+    <Responsibilities>
+      <Item priority="critical">文本分块（将长文档切分为语义完整的片段）</Item>
+      <Item priority="critical">Embedding生成（将文本转换为向量表示）</Item>
+      <Item priority="critical">相似度检索（基于向量相似度查找相关内容）</Item>
+      <Item priority="high">长期记忆存储（持久化用户历史对话）</Item>
+      <Item priority="high">索引管理（创建、更新、删除向量索引）</Item>
+      <Item priority="medium">元数据过滤（支持基于标签、时间的过滤检索）</Item>
+      <Item priority="medium">缓存管理（热点数据缓存提升检索速度）</Item>
+    </Responsibilities>
+    
+    <Components>
+      <Component name="VectorStore">
+        <Description>向量存储抽象，定义统一的向量数据库接口</Description>
+        <Implementations>
+          <Impl>ChromaVectorStore - 使用ChromaDB</Impl>
+          <Impl>PineconeVectorStore - 使用Pinecone云服务</Impl>
+          <Impl>FaissVectorStore - 使用FAISS本地索引</Impl>
+          <Impl>MemoryVectorStore - 内存存储（测试用）</Impl>
+        </Implementations>
+        <Interface>
+          <Method>add_documents(docs: List[Document]) -&gt; bool</Method>
+          <Method>search(query_embedding: List[float], top_k: int) -&gt; List[Document]</Method>
+          <Method>delete(document_ids: List[str]) -&gt; bool</Method>
+        </Interface>
+      </Component>
+      
+      <Component name="EmbeddingService">
+        <Description>Embedding服务，将文本转换为向量</Description>
+        <Providers>
+          <Provider>OpenAI text-embedding-ada-002</Provider>
+          <Provider>OpenAI text-embedding-3-small</Provider>
+          <Provider>Sentence Transformers（本地）</Provider>
+        </Providers>
+        <Methods>
+          <Method>embed(text: str) -&gt; List[float]</Method>
+          <Method>embed_batch(texts: List[str]) -&gt; List[List[float]]</Method>
+        </Methods>
+        <Configuration>
+          <Model>text-embedding-3-small</Model>
+          <Dimension>1536</Dimension>
+          <BatchSize>100</BatchSize>
+        </Configuration>
+      </Component>
+      
+      <Component name="TextChunker">
+        <Description>文本分块器，将长文本切分为语义完整的片段</Description>
+        <Strategies>
+          <Strategy>RecursiveCharacterTextSplitter - 递归字符分割</Strategy>
+          <Strategy>TokenTextSplitter - 基于Token数量分割</Strategy>
+          <Strategy>MarkdownHeaderTextSplitter - 基于Markdown标题分割</Strategy>
+        </Strategies>
+        <DefaultConfig>
+          <ChunkSize>1000字符</ChunkSize>
+          <ChunkOverlap>200字符</ChunkOverlap>
+          <Separator>[\"\\n\\n\", \"\\n\", \" \", \"\"]</Separator>
+        </DefaultConfig>
+      </Component>
+      
+      <Component name="MemoryStore">
+        <Description>记忆存储器，管理长期记忆（用户历史对话）</Description>
+        <StorageTypes>
+          <Type>ConversationMemory - 对话历史</Type>
+          <Type>UserPreferenceMemory - 用户偏好</Type>
+          <Type>KnowledgeMemory - 系统知识库</Type>
+        </StorageTypes>
+        <Methods>
+          <Method>store_conversation(session_id: str, messages: List[dict]) -&gt; bool</Method>
+          <Method>retrieve_history(session_id: str, limit: int) -&gt; List[dict]</Method>
+          <Method>store_preference(user_id: str, key: str, value: any) -&gt; bool</Method>
+        </Methods>
+      </Component>
+      
+      <Component name="IndexManager">
+        <Description>索引管理器，管理向量索引的生命周期</Description>
+        <Operations>
+          <Operation>create_index(name: str, dimension: int) -&gt; bool</Operation>
+          <Operation>update_index(name: str, documents: List[Document]) -&gt; bool</Operation>
+          <Operation>delete_index(name: str) -&gt; bool</Operation>
+          <Operation>optimize_index(name: str) -&gt; bool</Operation>
+        </Operations>
+      </Component>
+      
+      <Component name="CacheManager">
+        <Description>缓存管理器，缓存热点Embedding和检索结果</Description>
+        <Policy>LRU（最近最少使用）</Policy>
+        <MaxSize>10000条记录</MaxSize>
+        <TTL>3600秒（1小时）</TTL>
+      </Component>
+    </Components>
+    
+    <DataFlow>
+      <Step order="1">接收检索请求（query: str）</Step>
+      <Step order="2">CacheManager检查缓存（避免重复Embedding）</Step>
+      <Step order="3" condition="缓存未命中">EmbeddingService将query转为向量</Step>
+      <Step order="4">VectorStore执行相似度检索</Step>
+      <Step order="5">返回top_k个最相关的文档片段</Step>
+      <Step order="6">CacheManager缓存结果</Step>
+    </DataFlow>
+  </Structure>
+  
+  <!-- ==================== 2. 接口规范 ==================== -->
+  <Interface>
+    <PrimaryMethod name="search">
+      <Signature>
+        <Input>
+          <Parameter name="query" type="str" required="true">
+            <Description>检索词或查询内容</Description>
+            <Constraints>非空，建议长度10-500字符</Constraints>
+          </Parameter>
+          <Parameter name="top_k" type="int" required="false" default="5">
+            <Description>返回结果数量</Description>
+            <Constraints>1 &lt;= top_k &lt;= 50</Constraints>
+          </Parameter>
+          <Parameter name="filters" type="dict" required="false">
+            <Description>元数据过滤条件</Description>
+            <Example>
+              <![CDATA[
+              {
+                "user_id": "12345",
+                "timestamp": {"gte": 1700000000, "lte": 1700003600},
+                "tags": ["important"]
+              }
+              ]]>
+            </Example>
+          </Parameter>
+        </Input>
+        
+        <Output type="list[str]">
+          <Description>相关记忆片段的列表，按相似度排序</Description>
+          <ItemStructure>
+            <Field name="content" type="str">文档片段的文本内容</Field>
+            <Field name="score" type="float">相似度分数（0-1，1表示最相似）</Field>
+            <Field name="metadata" type="dict">附加元数据（来源、时间等）</Field>
+          </ItemStructure>
+          <Example>
+            <![CDATA[
+            [
+              {
+                "content": "用户之前询问过Python相关的问题...",
+                "score": 0.92,
+                "metadata": {"source": "history", "timestamp": 1234567890}
+              },
+              {
+                "content": "Python是一门高级编程语言...",
+                "score": 0.85,
+                "metadata": {"source": "knowledge_base", "doc_id": "py-001"}
+              }
+            ]
+            ]]>
+          </Example>
+        </Output>
+        
+        <Exceptions>
+          <Exception name="EmbeddingError">
+            <Description>Embedding生成失败（网络问题或API限制）</Description>
+            <ErrorCode>503</ErrorCode>
+          </Exception>
+          <Exception name="VectorStoreError">
+            <Description>向量数据库操作失败</Description>
+            <ErrorCode>500</ErrorCode>
+          </Exception>
+          <Exception name="InvalidFilterError">
+            <Description>过滤条件格式无效</Description>
+            <ErrorCode>400</ErrorCode>
+          </Exception>
+        </Exceptions>
+      </Signature>
+    </PrimaryMethod>
+    
+    <SecondaryMethod name="store">
+      <Signature>
+        <Input>
+          <Parameter name="document" type="str" required="true">
+            <Description>要存储的文档内容</Description>
+          </Parameter>
+          <Parameter name="metadata" type="dict" required="true">
+            <Description>文档元数据（必须包含doc_id）</Description>
+            <RequiredFields>doc_id, timestamp, source</RequiredFields>
+          </Parameter>
+        </Input>
+        
+        <Output type="bool">
+          <Description>存储是否成功</Description>
+        </Output>
+      </Signature>
+    </SecondaryMethod>
+    
+    <SecondaryMethod name="delete">
+      <Signature>
+        <Input>
+          <Parameter name="document_id" type="str" required="true">
+            <Description>要删除的文档ID</Description>
+          </Parameter>
+        </Input>
+        
+        <Output type="bool">
+          <Description>删除是否成功</Description>
+        </Output>
+      </Signature>
+    </SecondaryMethod>
+    
+    <SecondaryMethod name="store_conversation">
+      <Signature>
+        <Input>
+          <Parameter name="session_id" type="str" required="true">
+            <Description>会话ID</Description>
+          </Parameter>
+          <Parameter name="messages" type="list[dict]" required="true">
+            <Description>对话消息列表</Description>
+          </Parameter>
+        </Input>
+        
+        <Output type="bool">
+          <Description>存储是否成功</Description>
+        </Output>
+      </Signature>
+    </SecondaryMethod>
+    
+    <SecondaryMethod name="retrieve_history">
+      <Signature>
+        <Input>
+          <Parameter name="session_id" type="str" required="true">
+            <Description>会话ID</Description>
+          </Parameter>
+          <Parameter name="limit" type="int" required="false" default="10">
+            <Description>返回消息数量</Description>
+          </Parameter>
+        </Input>
+        
+        <Output type="list[dict]">
+          <Description>历史消息列表（OpenAI格式）</Description>
+        </Output>
+      </Signature>
+    </SecondaryMethod>
+  </Interface>
+  
+  <!-- ==================== 3. 耦合关系 ==================== -->
+  <Coupling>
+    <Upstream>
+      <Layer id="L3">逻辑编排层 (Orchestration)</Layer>
+      <Relation>被调用（接收检索和存储请求）</Relation>
+      <Method>L3通过MemoryInterface调用L4.search()、store()等</Method>
+      <DataFormat>字符串查询、Document对象</DataFormat>
+    </Upstream>
+    
+    <ExternalDependencies>
+      <Dependency id="EmbeddingAPI">
+        <Service>OpenAI/Anthropic Embedding API</Service>
+        <Usage>EmbeddingService调用API将文本转为向量</Usage>
+        <CouplingType>外部服务调用</CouplingType>
+      </Dependency>
+      
+      <Dependency id="VectorDB">
+        <Service>ChromaDB/Pinecone/FAISS</Service>
+        <Usage>VectorStore调用向量数据库存储和检索</Usage>
+        <CouplingType>外部服务调用（可替换实现）</CouplingType>
+      </Dependency>
+      
+      <Dependency id="Storage">
+        <Service>Redis/PostgreSQL（会话历史存储）</Service>
+        <Usage>MemoryStore持久化用户对话历史</Usage>
+        <CouplingType>数据持久化层</CouplingType>
+      </Dependency>
+    </ExternalDependencies>
+    
+    <Dependencies>
+      <Internal>
+        <Dependency>models.Document - 文档数据结构</Dependency>
+        <Dependency>interfaces.MemoryInterface - 接口定义</Dependency>
+      </Internal>
+      <External>
+        <Dependency>openai - OpenAI API客户端</Dependency>
+        <Dependency>chromadb - ChromaDB客户端</Dependency>
+        <Dependency>sentence-transformers - 本地Embedding模型</Dependency>
+        <Dependency>langchain - 文本分块工具</Dependency>
+        <Dependency>redis - 缓存和会话存储</Dependency>
+      </External>
+    </Dependencies>
+    
+    <CouplingStrength>低耦合</CouplingStrength>
+    <CouplingType>被动调用（被上层依赖注入使用）</CouplingType>
+    
+    <Note>
+      L4是被动层，不主动调用任何其他层。它通过接口暴露服务给L3，并通过依赖注入被L3使用。
+      所有的外部依赖（Embedding API、向量数据库）都通过抽象接口访问，便于替换和测试。
+    </Note>
+  </Coupling>
+  
+  <!-- ==================== 4. Mock测试规范 ==================== -->
+  <Testing>
+    <Strategy>Mock所有外部依赖（Embedding API、Vector DB），验证检索和存储逻辑</Strategy>
+    
+    <TestCases>
+      <TestCase id="TC-L4-001" priority="critical">
+        <Name>向量检索基本功能</Name>
+        <Objective>验证search()能正确检索相关文档</Objective>
+        <MockObjects>
+          <Mock>EmbeddingService - 返回固定向量[0.1, 0.2, ...]</Mock>
+          <Mock>VectorStore - 返回模拟检索结果</Mock>
+        </MockObjects>
+        <Steps>
+          <Step>构造查询"Python教程"</Step>
+          <Step>调用search(query="Python教程", top_k=3)</Step>
+        </Steps>
+        <Expected>
+          <Check>EmbeddingService.embed()被调用一次</Check>
+          <Check>VectorStore.search()被调用，参数正确</Check>
+          <Check>返回3个结果</Check>
+          <Check>结果按相似度排序</Check>
+        </Expected>
+      </TestCase>
+      
+      <TestCase id="TC-L4-002" priority="critical">
+        <Name>缓存命中</Name>
+        <Objective>验证相同查询会使用缓存，避免重复Embedding</Objective>
+        <MockObjects>
+          <Mock>CacheManager - 第二次返回缓存结果</Mock>
+          <Mock>EmbeddingService - 监控调用次数</Mock>
+        </MockObjects>
+        <Steps>
+          <Step>第一次调用search("Python教程")</Step>
+          <Step>第二次调用search("Python教程")</Step>
+        </Steps>
+        <Expected>
+          <Check>EmbeddingService.embed()只被调用1次</Check>
+          <Check>两次返回相同结果</Check>
+        </Expected>
+      </TestCase>
+      
+      <TestCase id="TC-L4-003" priority="high">
+        <Name>文档存储</Name>
+        <Objective>验证store()能正确存储文档</Objective>
+        <MockObjects>
+          <Mock>TextChunker - 将文档分块</Mock>
+          <Mock>EmbeddingService - 为每个块生成Embedding</Mock>
+          <Mock>VectorStore - 存储文档块</Mock>
+        </MockObjects>
+        <Steps>
+          <Step>构造长文档（&gt;2000字符）</Step>
+          <Step>调用store(document, metadata)</Step>
+        </Steps>
+        <Expected>
+          <Check>TextChunker.split()被调用</Check>
+          <Check>每个块都生成Embedding</Check>
+          <Check>所有块都存入VectorStore</Check>
+          <Check>返回True</Check>
+        </Expected>
+      </TestCase>
+      
+      <TestCase id="TC-L4-004" priority="high">
+        <Name>带过滤条件的检索</Name>
+        <Objective>验证filters参数能正确过滤结果</Objective>
+        <MockObjects>
+          <Mock>VectorStore - 支持过滤查询</Mock>
+        </MockObjects>
+        <Steps>
+          <Step>调用search(query, filters={"user_id": "12345"})</Step>
+        </Steps>
+        <Expected>
+          <Check>VectorStore.search()接收到filters参数</Check>
+          <Check>返回的结果都符合过滤条件</Check>
+        </Expected>
+      </TestCase>
+      
+      <TestCase id="TC-L4-005" priority="high">
+        <Name>对话历史存储与检索</Name>
+        <Objective>验证能正确存储和检索用户对话历史</Objective>
+        <MockObjects>
+          <Mock>MemoryStore - 存储到Redis/DB</Mock>
+        </MockObjects>
+        <Steps>
+          <Step>构造对话消息列表（5轮对话）</Step>
+          <Step>调用store_conversation(session_id, messages)</Step>
+          <Step>调用retrieve_history(session_id, limit=3)</Step>
+        </Steps>
+        <Expected>
+          <Check>store_conversation返回True</Check>
+          <Check>retrieve_history返回最近3条消息</Check>
+          <Check>消息格式符合OpenAI格式</Check>
+        </Expected>
+      </TestCase>
+      
+      <TestCase id="TC-L4-006" priority="medium">
+        <Name>Embedding服务失败处理</Name>
+        <Objective>验证Embedding API失败时会抛出正确异常</Objective>
+        <MockObjects>
+          <Mock>EmbeddingService - 抛出API错误</Mock>
+        </MockObjects>
+        <Steps>
+          <Step>构造查询</Step>
+          <Step>调用search(query)</Step>
+        </Steps>
+        <Expected>
+          <Check>抛出EmbeddingError</Check>
+          <Check>错误码为503</Check>
+          <Check>错误信息包含"Embedding service unavailable"</Check>
+        </Expected>
+      </TestCase>
+      
+      <TestCase id="TC-L4-007" priority="medium">
+        <Name>索引管理</Name>
+        <Objective>验证能创建、更新、删除向量索引</Objective>
+        <MockObjects>
+          <Mock>IndexManager - 管理索引操作</Mock>
+        </MockObjects>
+        <Steps>
+          <Step>调用create_index("test_index", dimension=1536)</Step>
+          <Step>调用update_index("test_index", documents)</Step>
+          <Step>调用delete_index("test_index")</Step>
+        </Steps>
+        <Expected>
+          <Check>所有操作返回True</Check>
+          <Check>IndexManager方法被正确调用</Check>
+        </Expected>
+      </TestCase>
+    </TestCases>
+    
+    <TDDApproach>
+      <Phase name="Red">
+        <Action>为检索、存储、缓存、历史管理编写失败测试</Action>
+        <Verify>测试失败，确认功能缺失</Verify>
+      </Phase>
+      <Phase name="Green">
+        <Action>实现最简单的检索和存储逻辑，Mock所有外部服务</Action>
+        <Verify>所有测试通过</Verify>
+      </Phase>
+      <Phase name="Refactor">
+        <Action>优化缓存策略，添加错误处理</Action>
+        <Verify>测试持续通过，性能提升</Verify>
+      </Phase>
+    </TDDApproach>
+  </Testing>
+  
+</Layer>

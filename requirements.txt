@@ -1,0 +1,39 @@
+# Core
+pydantic>=2.0.0
+python-dotenv>=1.0.0
+
+# Web
+fastapi>=0.104.0
+websockets>=12.0
+uvicorn>=0.24.0
+
+# AI/LLM
+openai>=1.0.0
+anthropic>=0.8.0
+
+# Vector DB
+chromadb>=0.4.0
+sentence-transformers>=2.2.0
+
+# Memory/Cache
+redis>=5.0.0
+
+# Security
+restrictedpython>=7.0
+pyjwt>=2.8.0
+
+# Rate Limiting
+py-rate-limiter>=3.0.0
+
+# Docker
+docker>=7.0.0
+
+# Utils
+psutil>=5.9.0
+aiohttp>=3.9.0
+python-telegram-bot>=20.0
+
+# Testing
+pytest>=7.4.0
+pytest-asyncio>=0.21.0
+pytest-mock>=3.12.0
