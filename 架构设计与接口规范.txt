@@ -1,0 +1,114 @@
+OpenClaw 六层架构系统设计说明书 (SDD)
+
+用户接入层 (User Interaction)	系统的“门面”：负责所有形式的输入与输出。
+控制网关层 (Control Gateway)	系统的“关卡”：负责路由、鉴权、限流与会话状态维护。
+逻辑编排层 (Orchestration)	系统的“指挥官”：负责意图识别、任务拆解与思维链管理。
+记忆与知识层 (Memory & Knowledge)	系统的“经验库”：负责 RAG、向量索引与长期记忆持久化。
+能力抽象层 (Tools & Capabilities)	系统的“技能包”：负责工具定义、API 封装与函数调用协议。
+环境执行层 (Runtime & Environment)	系统的“物理世界”：负责沙盒、容器、文件系统与本地 OS 调用。
+
+1. 架构总览与耦合机制
+
+本系统采用严格的洋葱架构/分层架构。
+
+耦合关系：单向依赖与契约耦合。上层可以调用下层（或相邻层），下层绝不允许主动调用上层。层与层之间完全解耦，仅通过严格定义的数据结构（Data Classes / JSON）进行通信。
+
+耦合方式：
+
+L1 -> L2: 异步消息传递（队列或直接方法调用）。
+
+L2 -> L3: 同步或异步方法调用，传递 SessionContext。
+
+L3 <-> L4/L5: 依赖注入（Dependency Injection）。L3 大脑不关心具体的向量库或沙盒，只调用 memory.search() 和 tools.execute() 接口。
+
+L5 -> L6: 进程间通信（IPC）或远程过程调用（gRPC/HTTP），因为 L6 通常在隔离的容器中。
+
+2. 层次结构与 I/O 规范
+
+L1: 用户接入层 (User Interaction)
+
+结构说明：负责处理各种异构的外部协议（WebSocket, Telegram API, HTTP Webhook），将其剥离渠道特征。
+
+接口：receive_payload(raw_data: dict) -> StandardEvent
+
+输入：任意渠道的原始 JSON（如 Telegram update）。
+
+输出 (StandardEvent)：
+
+channel (str): 渠道来源（如 "telegram"）
+
+user_id (str): 唯一用户标识
+
+content (str): 用户输入的文本或指令
+
+L2: 控制网关层 (Control Gateway)
+
+结构说明：会话的守门人。负责权限校验、历史记忆拼接，将无状态的 Event 转化为有状态的 Context。
+
+接口：process_event(event: StandardEvent) -> SessionContext / send_response(session_id, text)
+
+输入：StandardEvent
+
+输出 (SessionContext)：
+
+session_id (str): 会话唯一 ID
+
+user_id (str): 用户 ID
+
+current_query (str): 当前问题
+
+history (list[dict]): 历史对话记录的滑动窗口
+
+L3: 逻辑编排层 (Orchestration)
+
+结构说明：系统的“大脑”。内置 ReAct 循环（Thought -> Action -> Observation）。驱动大模型进行规划，并根据结果决定是调用工具还是回复用户。
+
+接口：run(context: SessionContext) -> str
+
+输入：SessionContext (来自 L2) 和 Observation (执行循环中来自 L5 的反馈)。
+
+输出：最终回复给用户的文本字符串 (返回给 L2)，内部流转时输出 AgentAction 给 L5。
+
+L4: 记忆与知识层 (Memory & Knowledge)
+
+结构说明：被动调用的向量数据库抽象层。负责文本分块、Embedding 和相似度检索。
+
+接口：search(query: str, top_k: int) -> list[str]
+
+输入：检索词 query (str)
+
+输出：相关记忆片段的列表 list[str]
+
+L5: 能力抽象层 (Tools & Capabilities)
+
+结构说明：安全路由。将大模型生成的函数名和 JSON 参数，映射为实际的系统调用。
+
+接口：execute(action_name: str, params: dict) -> Observation
+
+输入 (AgentAction)：
+
+action (str): 工具名称（如 "python_repl"）
+
+action_input (dict): 参数（如 {"code": "print('hello')"}）
+
+输出 (Observation)：
+
+status (str): "success" 或 "error"
+
+result (str): 执行结果的字符串表示
+
+L6: 环境执行层 (Runtime & Environment)
+
+结构说明：物理或虚拟的隔离沙盒环境。直接与宿主机 OS 或 Docker 交互。
+
+接口：run_code(language: str, code: str) -> ExecutionResult
+
+输入：编程语言和代码字符串。
+
+输出 (ExecutionResult)：
+
+exit_code (int): 0 为成功，非 0 为失败
+
+stdout (str): 标准输出
+
+stderr (str): 报错信息

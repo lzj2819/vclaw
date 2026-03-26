@@ -1,0 +1,169 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  VClaw 系统架构总览
+  六层架构完整说明
+-->
+<Architecture name="VClaw" version="1.0">
+  
+  <Overview>
+    <Description>VClaw是一个六层架构的AI Agent系统，参考OpenClaw设计，采用严格的分层架构和单向依赖原则</Description>
+    <DesignPrinciples>
+      <Principle>单向依赖：上层可调用下层，下层绝不允许调用上层</Principle>
+      <Principle>接口隔离：层与层之间通过严格定义的接口通信</Principle>
+      <Principle>依赖注入：使用依赖注入实现松耦合</Principle>
+      <Principle>测试先行：所有功能先写测试（TDD），再写实现</Principle>
+      <Principle>安全第一：严格的安全控制和沙盒隔离</Principle>
+    </DesignPrinciples>
+  </Overview>
+  
+  <Layers>
+    <Layer id="L1" name="User Interaction">
+      <Role>系统的门面</Role>
+      <Responsibility>处理所有形式的输入与输出</Responsibility>
+      <KeyInterface>receive_payload(raw_data: dict) -&gt; StandardEvent</KeyInterface>
+      <DataStructure>StandardEvent</DataStructure>
+      <Coupling>直接调用L2.process_event()</Coupling>
+    </Layer>
+    
+    <Layer id="L2" name="Control Gateway">
+      <Role>系统的关卡</Role>
+      <Responsibility>路由、鉴权、限流与会话状态维护</Responsibility>
+      <KeyInterface>process_event(event: StandardEvent) -&gt; SessionContext</KeyInterface>
+      <DataStructure>SessionContext</DataStructure>
+      <Coupling>直接调用L3.run()</Coupling>
+    </Layer>
+    
+    <Layer id="L3" name="Orchestration">
+      <Role>系统的指挥官</Role>
+      <Responsibility>意图识别、任务拆解与思维链管理</Responsibility>
+      <KeyInterface>run(context: SessionContext) -&gt; Union[str, AgentAction]</KeyInterface>
+      <DataStructure>AgentAction, Observation</DataStructure>
+      <Coupling>依赖注入使用L4和L5接口</Coupling>
+    </Layer>
+    
+    <Layer id="L4" name="Memory &amp; Knowledge">
+      <Role>系统的经验库</Role>
+      <Responsibility>RAG、向量索引与长期记忆持久化</Responsibility>
+      <KeyInterface>search(query: str, top_k: int) -&gt; list[str]</KeyInterface>
+      <DataStructure>Document</DataStructure>
+      <Coupling>被动调用，被L3依赖注入使用</Coupling>
+    </Layer>
+    
+    <Layer id="L5" name="Tools &amp; Capabilities">
+      <Role>系统的技能包</Role>
+      <Responsibility>工具定义、API封装与函数调用协议</Responsibility>
+      <KeyInterface>execute(action_name: str, params: dict) -&gt; Observation</KeyInterface>
+      <DataStructure>Observation</DataStructure>
+      <Coupling>依赖注入被L3使用，调用L6.run_code()</Coupling>
+    </Layer>
+    
+    <Layer id="L6" name="Runtime &amp; Environment">
+      <Role>系统的物理世界</Role>
+      <Responsibility>沙盒、容器、文件系统与本地OS调用</Responsibility>
+      <KeyInterface>run_code(language: str, code: str) -&gt; ExecutionResult</KeyInterface>
+      <DataStructure>ExecutionResult</DataStructure>
+      <Coupling>被动调用，被L5直接调用</Coupling>
+    </Layer>
+  </Layers>
+  
+  <DataFlow>
+    <Step order="1">L1接收外部输入，转换为StandardEvent</Step>
+    <Step order="2">L1调用L2.process_event(event)</Step>
+    <Step order="3">L2进行鉴权、限流，组装SessionContext</Step>
+    <Step order="4">L2调用L3.run(context)</Step>
+    <Step order="5">L3进行意图识别，可能调用L4.search()检索知识</Step>
+    <Step order="6">L3进入ReAct循环，决定调用工具或直接回复</Step>
+    <Step order="7" condition="调用工具">L3返回AgentAction给L2，L2转发给L5</Step>
+    <Step order="8">L5验证权限和参数，调用L6.run_code()</Step>
+    <Step order="9">L6在沙盒中执行代码，返回ExecutionResult</Step>
+    <Step order="10">L5格式化为Observation，返回给L3</Step>
+    <Step order="11">L3继续ReAct循环（回到Step 6）</Step>
+    <Step order="12" condition="直接回复">L3生成最终回复文本，返回给L2</Step>
+    <Step order="13">L2调用L1发送响应给用户</Step>
+  </DataFlow>
+  
+  <CouplingMatrix>
+    <!-- 行表示调用方，列表示被调用方 -->
+    <Row from="L1">
+      <Col to="L1" value="-">/>
+      <Col to="L2" value="direct" desc="直接方法调用">/>
+      <Col to="L3" value="-">/>
+      <Col to="L4" value="-">/>
+      <Col to="L5" value="-">/>
+      <Col to="L6" value="-">/>
+    </Row>
+    
+    <Row from="L2">
+      <Col to="L1" value="callback" desc="回调发送响应">/>
+      <Col to="L2" value="-">/>
+      <Col to="L3" value="direct" desc="直接方法调用">/>
+      <Col to="L4" value="-">/>
+      <Col to="L5" value="-">/>
+      <Col to="L6" value="-">/>
+    </Row>
+    
+    <Row from="L3">
+      <Col to="L1" value="-">/>
+      <Col to="L2" value="return" desc="返回回复文本">/>
+      <Col to="L3" value="-">/>
+      <Col to="L4" value="di" desc="依赖注入接口">/>
+      <Col to="L5" value="di" desc="依赖注入接口">/>
+      <Col to="L6" value="-">/>
+    </Row>
+    
+    <Row from="L4">
+      <Col to="L1" value="-">/>
+      <Col to="L2" value="-">/>
+      <Col to="L3" value="-">/>
+      <Col to="L4" value="-">/>
+      <Col to="L5" value="-">/>
+      <Col to="L6" value="-">/>
+    </Row>
+    
+    <Row from="L5">
+      <Col to="L1" value="-">/>
+      <Col to="L2" value="-">/>
+      <Col to="L3" value="return" desc="返回Observation">/>
+      <Col to="L4" value="-">/>
+      <Col to="L5" value="-">/>
+      <Col to="L6" value="direct" desc="直接方法调用">/>
+    </Row>
+    
+    <Row from="L6">
+      <Col to="L1" value="-">/>
+      <Col to="L2" value="-">/>
+      <Col to="L3" value="-">/>
+      <Col to="L4" value="-">/>
+      <Col to="L5" value="return" desc="返回ExecutionResult">/>
+      <Col to="L6" value="-">/>
+    </Row>
+  </CouplingMatrix>
+  
+  <TechnologyStack>
+    <Language>Python 3.11+</Language>
+    <Testing>pytest</Testing>
+    <PackageManager>pip + requirements.txt</PackageManager>
+    
+    <KeyLibraries>
+      <Library>pydantic - 数据验证</Library>
+      <Library>fastapi - HTTP服务</Library>
+      <Library>websockets - WebSocket支持</Library>
+      <Library>openai - LLM客户端</Library>
+      <Library>chromadb - 向量数据库</Library>
+      <Library>docker - 容器管理</Library>
+      <Library>redis - 缓存和会话</Library>
+    </KeyLibraries>
+  </TechnologyStack>
+  
+  <Documentation>
+    <LayerDocs>
+      <Doc layer="L1" path="docs/L1_UserInteraction.xml">用户接入层详细规范</Doc>
+      <Doc layer="L2" path="docs/L2_ControlGateway.xml">控制网关层详细规范</Doc>
+      <Doc layer="L3" path="docs/L3_Orchestration.xml">逻辑编排层详细规范</Doc>
+      <Doc layer="L4" path="docs/L4_MemoryKnowledge.xml">记忆与知识层详细规范</Doc>
+      <Doc layer="L5" path="docs/L5_ToolsCapabilities.xml">能力抽象层详细规范</Doc>
+      <Doc layer="L6" path="docs/L6_RuntimeEnvironment.xml">环境执行层详细规范</Doc>
+    </LayerDocs>
+  </Documentation>
+  
+</Architecture>
