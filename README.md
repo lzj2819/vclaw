@@ -444,40 +444,103 @@ asyncio_mode = auto
 
 ### 完整请求处理流程
 
+```mermaid
+flowchart TD
+    %% 定义样式类
+    classDef l1 fill:#e1f5ff,stroke:#01579b,stroke-width:2px
+    classDef l2 fill:#fff3e0,stroke:#e65100,stroke-width:2px
+    classDef l3 fill:#f3e5f5,stroke:#6a1b9a,stroke-width:2px
+    classDef l4 fill:#e8f5e9,stroke:#2e7d32,stroke-width:2px
+    classDef l5 fill:#fff8e1,stroke:#f57f17,stroke-width:2px
+    classDef l6 fill:#fce4ec,stroke:#c2185b,stroke-width:2px
+    classDef user fill:#f5f5f5,stroke:#616161,stroke-width:2px
+    classDef data fill:#ffffff,stroke:#424242,stroke-width:1px,stroke-dasharray: 5 5
+
+    %% 用户输入
+    User(["👤 用户"]):::user -->|"1. 输入"| L1
+
+    %% L1: 用户接入层
+    L1["📥 L1: User Interaction<br/>接收外部输入"]:::l1
+    L1 -->|"StandardEvent"| L2
+
+    %% L2: 控制网关层
+    L2["🔐 L2: Control Gateway<br/>鉴权、限流、会话管理"]:::l2
+    L2 <-->|"检索历史"| L4_Memory["🧠 L4: Memory<br/>retrieve_history()"]:::l4
+    L2 -->|"SessionContext"| L3
+
+    %% L3: 逻辑编排层
+    L3["🧩 L3: Orchestration<br/>意图识别、ReAct循环"]:::l3
+    L3 <-->|"检索知识"| L4_Search["🧠 L4: Memory<br/>search()"]:::l4
+
+    %% ReAct 循环决策
+    L3 -->|"2. 决策"| Decision{需要<br/>调用工具?}
+
+    %% 分支1: 调用工具路径
+    Decision -->|"是"| AgentAction["🛠️ AgentAction<br/>工具调用指令"]:::data
+    AgentAction -->|"3. 转发"| L5
+
+    L5["⚙️ L5: Tools & Capabilities<br/>验证权限和参数"]:::l5
+    L5 -->|"4. 执行代码"| L6
+
+    L6["🖥️ L6: Runtime Environment<br/>沙盒执行"]:::l6
+    L6 -->|"5. ExecutionResult"| L5
+    L5 -->|"6. Observation"| L3
+
+    %% ReAct 循环回到决策
+    L3 -->|"7. 继续循环"| Decision
+
+    %% 分支2: 直接回复路径
+    Decision -->|"否"| FinalResponse["💬 最终回复"]:::data
+    FinalResponse -->|"8. 返回"| L2
+    L2 -->|"9. 发送响应"| L1_Response["📤 L1 发送响应"]:::l1
+    L1_Response -->|"响应"| User
+
+    %% 添加说明框
+    subgraph Legend["📋 图例"]
+        direction LR
+        Leg1["用户接入"]:::l1
+        Leg2["控制网关"]:::l2
+        Leg3["逻辑编排"]:::l3
+        Leg4["记忆知识"]:::l4
+        Leg5["工具能力"]:::l5
+        Leg6["运行环境"]:::l6
+    end
+
+    %% 样式调整
+    style Legend fill:#fafafa,stroke:#9e9e9e
 ```
-1. 用户输入 → L1.receive_payload()
-   └─→ 输出: StandardEvent
 
-2. L1 → L2.process_event()
-   ├─→ 鉴权、限流
-   ├─→ 会话管理
-   ├─→ 历史检索 (调用 L4.retrieve_history)
-   └─→ 输出: SessionContext
+### 流程说明
 
-3. L2 → L3.run()
-   ├─→ 意图识别
-   ├─→ 知识检索 (调用 L4.search)
-   ├─→ ReAct 循环
-   │   ├─→ LLM 生成 Thought
-   │   ├─→ 决策: 调用工具或直接回复
-   │   └─→ 如需工具: 输出 AgentAction → L5
-   └─→ 输出: 最终回复文本 或 AgentAction
+| 步骤 | 层次 | 操作 | 数据类型 |
+|------|------|------|----------|
+| 1 | L1 | 接收外部输入，转换为 StandardEvent | StandardEvent |
+| 2 | L2 | 鉴权、限流，组装 SessionContext，检索历史 | SessionContext |
+| 3 | L3 | 意图识别，可能调用 L4.search() 检索知识 | - |
+| 4 | L3 | 进入 ReAct 循环，决策：调用工具或直接回复 | AgentAction / str |
+| 5 | L3→L5 | 如需工具：返回 AgentAction 给 L5 | AgentAction |
+| 6 | L5 | 验证权限和参数，调用 L6.run_code() | - |
+| 7 | L6 | 在沙盒中执行代码，返回 ExecutionResult | ExecutionResult |
+| 8 | L5 | 格式化为 Observation，返回给 L3 | Observation |
+| 9 | L3 | 继续 ReAct 循环（回到步骤 4） | - |
+| 10 | L3 | 直接回复：生成最终回复文本，返回给 L2 | str |
+| 11 | L2→L1 | 发送响应给用户 | - |
 
-4. L3 → L5.execute() (如果是工具调用)
-   ├─→ 参数验证
-   ├─→ 权限检查
-   ├─→ 调用 L6.run_code() (如果是代码工具)
-   └─→ 输出: Observation → 返回 L3
+### 关键路径示例
 
-5. L5 → L6.run_code()
-   ├─→ 创建沙盒
-   ├─→ 执行代码
-   ├─→ 捕获输出
-   ├─→ 清理沙盒
-   └─→ 输出: ExecutionResult
+**📝 简单对话流程**（无需工具）:
+```
+User → L1 → L2 → L3 → [直接回复] → L2 → L1 → User
+```
 
-6. L3 → L2 → L1
-   └─→ 最终回复返回给用户
+**🧮 工具调用流程**（如计算器）:
+```
+User → L1 → L2 → L3 → [需要工具] → L5 → [无需L6] → Observation → L3 → [继续决策] → L2 → L1 → User
+```
+
+**💻 代码执行流程**（完整ReAct循环）:
+```
+User → L1 → L2 → L3 → [需要工具] → L5 → L6 → ExecutionResult → Observation → L3 → [可能需要多次循环] → L2 → L1 → User
 ```
 
 ---
