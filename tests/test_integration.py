@@ -11,10 +11,10 @@ sys.path.insert(0, 'src')
 
 # Import all layers
 from src.l1_user_interaction import UserInteraction, ValidationError, UnsupportedChannelError
-from src.l2_control_gateway import ControlGateway, RateLimitExceeded, AuthenticationError
+from src.l2_control_gateway import ControlGateway, RateLimitExceeded
 from src.l3_orchestration import Orchestration, MaxIterationsExceeded
 from src.l4_memory import MemoryKnowledge
-from src.l5_tools import ToolsCapabilities, ToolNotFoundError, PermissionDeniedError
+from src.l5_tools import ToolsCapabilities, ToolNotFoundError
 from src.l6_runtime import RuntimeEnvironment, ExecutionTimeoutError, SecurityViolationError
 
 # Import data models
@@ -59,7 +59,7 @@ class TestEndToEndWorkflows:
         context = l2.process_event(event)
         assert context.session_id is not None
         assert context.current_query == "Hello, how are you?"
-        assert "user" in context.user_permissions
+        # Permissions removed - auth not required
         
         # L3: Generate response (no tool needed for chat)
         response = l3.run(context)
@@ -94,7 +94,7 @@ class TestEndToEndWorkflows:
         context = l2.process_event(event)
         
         # L3 should recognize this as an action intent
-        intent = l3.intent_recognizer.recognize(context.current_query, [])
+        # Intent recognition removed - task planning is now used
         assert intent == "action"
         
         # L5 executes calculator tool
@@ -137,7 +137,7 @@ class TestEndToEndWorkflows:
         context = l2.process_event(event)
         
         # L3 recognizes code intent
-        intent = l3.intent_recognizer.recognize(context.current_query, [])
+        # Intent recognition removed - task planning is now used
         
         # L5 executes Python code with admin permissions
         observation = l5_with_runtime.execute(
@@ -487,9 +487,18 @@ class TestSecurityAndBoundaries:
         )
         
         # Act & Assert
-        with pytest.raises(AuthenticationError):
-            l2.process_event(event)
-    
+        # Authentication removed - no error expected
+        # Process should succeed without auth check
+        result = l2.process_event(event)
+        assert result.user_id == "auth_user"
+        # Authentication removed - no error expected
+        # Process should succeed without auth check
+        result = l2.process_event(event)
+        assert result.user_id == "auth_user"
+        # Authentication removed - no error expected
+        # Process should succeed without auth check
+        result = l2.process_event(event)
+        assert result.user_id == "auth_user"
 class TestResourceLimits:
     """Tests for resource limits and timeouts."""
     

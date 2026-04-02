@@ -8,31 +8,10 @@ from typing import Optional, Dict, Any
 from pathlib import Path
 from src.models import ExecutionResult
 from src.interfaces import RuntimeInterface
-
-
-class ExecutionTimeoutError(Exception):
-    """Raised when code execution times out."""
-    pass
-
-
-class UnsupportedLanguageError(Exception):
-    """Raised when language is not supported."""
-    pass
-
-
-class ResourceExceededError(Exception):
-    """Raised when resource limits are exceeded."""
-    pass
-
-
-class SecurityViolationError(Exception):
-    """Raised when code violates security policy."""
-    pass
-
-
-class SandboxCreationError(Exception):
-    """Raised when sandbox creation fails."""
-    pass
+from src.exceptions import (
+    ExecutionTimeoutError, UnsupportedLanguageError,
+    ResourceExceededError, SecurityViolationError, SandboxCreationError
+)
 
 
 class ProcessSandbox:

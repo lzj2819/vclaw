@@ -4,15 +4,15 @@ from unittest.mock import Mock, patch
 import sys
 sys.path.insert(0, 'src')
 
-from src.l3_orchestration import Orchestration
+from src.l3_orchestration import Orchestration, TaskPlanner, MemoryAccessor
 from src.models import SessionContext, AgentAction, Observation
 
 
 class TestOrchestration:
     """Tests for L3 Orchestration."""
-    
+
     def test_simple_chat_response(self):
-        """TC-L3-001: 简单对话回复（无需工具）"""
+        """TC-L3-001: Simple chat response (no tools needed)"""
         # Arrange
         orchestration = Orchestration()
         context = SessionContext(
@@ -22,24 +22,26 @@ class TestOrchestration:
             history=[],
             user_permissions=["user"]
         )
-        
-        # Mock intent recognizer
-        with patch.object(orchestration.intent_recognizer, 'recognize') as mock_intent:
-            mock_intent.return_value = "chat"
-            
+
+        # Mock task planner to return direct LLM step
+        with patch.object(orchestration.task_planner, 'create_plan') as mock_plan:
+            mock_plan.return_value = [
+                {"step": 1, "action": "llm", "description": "Chat response", "input": {}, "depends_on": []}
+            ]
+
             # Mock LLM to return direct response
             with patch.object(orchestration.llm_manager, 'complete') as mock_llm:
                 mock_llm.return_value = "Hello! How can I help you today?"
-                
+
                 # Act
                 result = orchestration.run(context)
-                
+
                 # Assert
                 assert isinstance(result, str)
                 assert "Hello" in result
-    
+
     def test_single_tool_call(self):
-        """TC-L3-002: 单步工具调用"""
+        """TC-L3-002: Single tool call"""
         # Arrange
         orchestration = Orchestration()
         context = SessionContext(
@@ -49,62 +51,52 @@ class TestOrchestration:
             history=[],
             user_permissions=["admin"]
         )
-        
-        # Mock intent recognizer
-        with patch.object(orchestration.intent_recognizer, 'recognize') as mock_intent:
-            mock_intent.return_value = "action"
-            
-            # First call returns AgentAction, second returns final response
-            llm_responses = [
-                AgentAction(action="python_repl", action_input={"code": "print(1+1)"}, thought="Need to calculate"),
-                "The result of 1+1 is 2"
+
+        # Mock task planner to return calculator step
+        with patch.object(orchestration.task_planner, 'create_plan') as mock_plan:
+            mock_plan.return_value = [
+                {"step": 1, "action": "calculator", "description": "Calculate", "input": {"expression": "1+1"}, "depends_on": []}
             ]
-            
-            with patch.object(orchestration.llm_manager, 'complete', side_effect=llm_responses):
-                # Mock tools to return observation
-                with patch.object(orchestration.tools, 'execute') as mock_tools:
-                    mock_tools.return_value = Observation(
-                        status="success",
-                        result="2",
-                        execution_time=0.1,
-                        metadata={}
-                    )
-                    
-                    # Act - First call returns AgentAction
-                    result = orchestration.run(context)
-                    
-                    # Assert
-                    assert isinstance(result, AgentAction)
-                    assert result.action == "python_repl"
-                    
-                    # Act - Second call with observation returns final response
-                    observation = Observation(status="success", result="2", execution_time=0.1, metadata={})
-                    result = orchestration.run(context, observation)
-                    
-                    # Assert
-                    assert isinstance(result, str)
-    
-    def test_intent_recognition(self):
-        """TC-L3-005: 意图识别准确性"""
+
+            # Act - First call returns AgentAction
+            result = orchestration.run(context)
+
+            # Assert
+            assert isinstance(result, AgentAction)
+            assert result.action == "calculator"
+
+            # Act - Second call with observation returns final response
+            with patch.object(orchestration.llm_manager, 'complete') as mock_llm:
+                mock_llm.return_value = "The result of 1+1 is 2"
+
+                observation = Observation(status="success", result="2", execution_time=0.1, metadata={})
+                result = orchestration.run(context, observation)
+
+                # Assert
+                assert isinstance(result, str)
+
+    def test_task_planning(self):
+        """TC-L3-005: Task planning replaces intent recognition"""
         # Arrange
         orchestration = Orchestration()
-        
-        test_cases = [
-            ("Hello", "chat"),
-            ("What's the weather?", "query"),
-            ("Write a Python function", "code"),
-            ("Calculate this for me", "action")
+
+        test_queries = [
+            "Hello",
+            "What's the weather?",
+            "Write a Python function",
+            "Calculate this for me"
         ]
-        
-        for query, expected_intent in test_cases:
+
+        for query in test_queries:
             # Act
-            intent = orchestration.intent_recognizer.recognize(query, [])
-            
-            # Assert
-            assert intent == expected_intent, f"Expected {expected_intent} for '{query}', got {intent}"
-    
+            plan = orchestration.task_planner.create_plan(query, "", [])
+
+            # Assert - plan should be created
+            assert isinstance(plan, list)
+            assert len(plan) >= 1
+
     def test_memory_retrieval(self):
-        """TC-L3-006: L4知识检索增强"""
+        """TC-L3-006: L4 knowledge retrieval enhancement"""
         # Arrange
         orchestration = Orchestration()
         context = SessionContext(
@@ -114,42 +106,77 @@ class TestOrchestration:
             history=[],
             user_permissions=["user"]
         )
-        
-        # Mock memory search
-        with patch.object(orchestration.memory, 'search') as mock_search:
+
+        # Mock memory search via MemoryAccessor
+        with patch.object(orchestration.memory_accessor.memory, 'search') as mock_search:
             mock_search.return_value = ["Python is a programming language"]
-            
+
             # Act
-            results = orchestration.memory.search("Python", top_k=3)
-            
+            result = orchestration.memory_accessor.retrieve_for_query(
+                context.current_query,
+                context.session_id
+            )
+
             # Assert
-            mock_search.assert_called_once_with("Python", top_k=3)
-            assert len(results) == 1
+            assert isinstance(result, dict)
+            assert "knowledge" in result
 
 
-class TestIntentRecognizer:
-    """Tests for intent recognition."""
-    
-    def test_recognize_chat(self):
-        """Test recognizing chat intent"""
-        from src.l3_orchestration import IntentRecognizer
-        
-        recognizer = IntentRecognizer()
-        assert recognizer.recognize("Hello", []) == "chat"
-        assert recognizer.recognize("How are you?", []) == "chat"
-    
-    def test_recognize_code(self):
-        """Test recognizing code intent"""
-        from src.l3_orchestration import IntentRecognizer
-        
-        recognizer = IntentRecognizer()
-        assert recognizer.recognize("Write code", []) == "code"
-        assert recognizer.recognize("Python function", []) == "code"
-    
-    def test_recognize_action(self):
-        """Test recognizing action intent"""
-        from src.l3_orchestration import IntentRecognizer
-        
-        recognizer = IntentRecognizer()
-        assert recognizer.recognize("Calculate 2+2", []) == "action"
-        assert recognizer.recognize("Search for this", []) == "action"
+class TestTaskPlanner:
+    """Tests for TaskPlanner."""
+
+    def test_create_plan_simple(self):
+        """Test creating a simple plan"""
+        planner = TaskPlanner()
+
+        plan = planner.create_plan("Hello", "", [])
+
+        assert isinstance(plan, list)
+        assert len(plan) >= 1
+
+    def test_get_next_step(self):
+        """Test getting next step from plan"""
+        planner = TaskPlanner()
+
+        plan = [
+            {"step": 1, "action": "llm", "description": "Step 1", "depends_on": []},
+            {"step": 2, "action": "calculator", "description": "Step 2", "depends_on": [1]}
+        ]
+
+        # First step
+        step = planner.get_next_step(plan, [])
+        assert step["step"] == 1
+
+        # Second step after first completed
+        step = planner.get_next_step(plan, [1])
+        assert step["step"] == 2
+
+
+class TestMemoryAccessor:
+    """Tests for MemoryAccessor."""
+
+    def test_retrieve_for_query(self):
+        """Test retrieving context for query"""
+        accessor = MemoryAccessor()
+
+        result = accessor.retrieve_for_query("test query", "test_session")
+
+        assert isinstance(result, dict)
+        assert "knowledge" in result
+        assert "history_summary" in result
+        assert "related_queries" in result
+
+    def test_format_context(self):
+        """Test formatting retrieved context"""
+        accessor = MemoryAccessor()
+
+        retrieval_result = {
+            "knowledge": ["Item 1", "Item 2"],
+            "history_summary": "2 messages",
+            "related_queries": ["Previous query"]
+        }
+
+        formatted = accessor.format_context(retrieval_result)
+
+        assert "Item 1" in formatted
+        assert "messages" in formatted

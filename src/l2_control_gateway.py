@@ -1,4 +1,4 @@
-"""L2: Control Gateway Layer - Authentication, rate limiting, session management."""
+"""L2: Control Gateway Layer - Rate limiting, session management."""
 import time
 import uuid
 from typing import Dict, List, Optional
@@ -6,99 +6,73 @@ from collections import defaultdict, deque
 from src.models import StandardEvent, SessionContext
 from src.interfaces import MemoryInterface
 from src.l4_memory import MemoryKnowledge
-
-
-class RateLimitExceeded(Exception):
-    """Raised when rate limit is exceeded."""
-    pass
-
-
-class AuthenticationError(Exception):
-    """Raised when authentication fails."""
-    pass
-
-
-class ForbiddenError(Exception):
-    """Raised when user lacks permission."""
-    pass
-
-
-class SessionError(Exception):
-    """Raised when session operation fails."""
-    pass
+from src.exceptions import (
+    RateLimitExceeded, SessionError,
+    AuthenticationError, ForbiddenError  # Deprecated but kept for compatibility
+)
 
 
 class RateLimiter:
     """Token bucket rate limiter."""
-    
+
     def __init__(self, max_requests: int = 60, window_seconds: int = 60):
         self.max_requests = max_requests
         self.window_seconds = window_seconds
         self.requests = defaultdict(deque)  # user_id -> deque of timestamps
-    
+
     def is_allowed(self, user_id: str) -> bool:
         """Check if request is allowed under rate limit."""
         now = time.time()
         user_requests = self.requests[user_id]
-        
+
         # Remove old requests outside window
         while user_requests and user_requests[0] < now - self.window_seconds:
             user_requests.popleft()
-        
+
         # Check if under limit
         if len(user_requests) < self.max_requests:
             user_requests.append(now)
             return True
-        
+
         return False
-
-
-class Authenticator:
-    """Simple authenticator."""
-    
-    def verify_token(self, token: str) -> bool:
-        """Verify authentication token."""
-        # Mock implementation - accept any non-empty token
-        return bool(token) and token != "invalid_token"
-    
-    def get_user_permissions(self, user_id: str) -> List[str]:
-        """Get user permissions."""
-        # Mock implementation
-        if user_id.startswith("admin"):
-            return ["admin", "user"]
-        elif user_id.startswith("guest"):
-            return ["guest"]
-        return ["user"]
 
 
 class ControlGateway:
     """L2 implementation - Control gateway."""
-    
-    def __init__(self, memory: MemoryInterface = None):
+
+    DEFAULT_SESSION_MAX_AGE = 3600  # 1 hour
+    SESSION_CLEANUP_INTERVAL = 100  # Cleanup every 100 requests
+
+    def __init__(self, memory: MemoryInterface = None,
+                 session_max_age: int = DEFAULT_SESSION_MAX_AGE):
         self.memory = memory or MemoryKnowledge()
         self.rate_limiter = RateLimiter(max_requests=60, window_seconds=60)
-        self.authenticator = Authenticator()
         self.sessions = {}  # session_id -> session_data
-    
+        self.session_max_age = session_max_age
+        self._request_count = 0
+
+    def _cleanup_expired_sessions(self):
+        """Remove expired sessions to prevent memory leaks."""
+        now = time.time()
+        expired = [
+            sid for sid, data in self.sessions.items()
+            if now - data.get("created_at", 0) > self.session_max_age
+        ]
+        for sid in expired:
+            del self.sessions[sid]
+
     def process_event(self, event: StandardEvent) -> SessionContext:
         """Process event and create session context."""
+        # Periodic cleanup of expired sessions
+        self._request_count += 1
+        if self._request_count >= self.SESSION_CLEANUP_INTERVAL:
+            self._cleanup_expired_sessions()
+            self._request_count = 0
+
         # Check rate limit
         if not self.rate_limiter.is_allowed(event.user_id):
             raise RateLimitExceeded(f"Rate limit exceeded for user {event.user_id}")
-        
-        # Authenticate
-        token = event.metadata.get("auth_token")
-        if token and not self.authenticator.verify_token(token):
-            raise AuthenticationError("Invalid authentication token")
-        
-        # Get user permissions
-        user_permissions = self.authenticator.get_user_permissions(event.user_id)
-        
-        # Check required permission if specified
-        required_perm = event.metadata.get("required_permission")
-        if required_perm and required_perm not in user_permissions:
-            raise ForbiddenError(f"Permission '{required_perm}' required")
-        
+
         # Get or create session
         session_id = event.metadata.get("session_id")
         if not session_id or session_id not in self.sessions:
@@ -107,22 +81,22 @@ class ControlGateway:
                 "user_id": event.user_id,
                 "created_at": time.time()
             }
-        
+
         # Retrieve history
         history = self.memory.retrieve_history(session_id, limit=10)
-        
+
         # Create context
         context = SessionContext(
             session_id=session_id,
             user_id=event.user_id,
             current_query=event.content,
             history=history,
-            user_permissions=user_permissions,
+            user_permissions=[],  # Empty permissions - auth removed
             metadata={"channel": event.channel}
         )
-        
+
         return context
-    
+
     def send_response(self, session_id: str, text: str) -> bool:
         """Send response to user."""
         # Mock implementation - just log
